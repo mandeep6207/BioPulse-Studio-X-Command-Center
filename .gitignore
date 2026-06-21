@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+biopulse_backend/data/output_batch/*
+!biopulse_backend/data/output_batch/.gitkeep
