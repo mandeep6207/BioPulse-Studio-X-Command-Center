@@ -1,7 +1,14 @@
 import os
+import sys
 import json
 import tempfile
 import time
+
+# Ensure biopulse_backend parent directory is in sys.path for Streamlit Cloud deployment
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
