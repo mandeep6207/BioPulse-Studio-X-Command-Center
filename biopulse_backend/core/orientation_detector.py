@@ -11,8 +11,18 @@ def detect_orientation(signal: np.ndarray, fs: float) -> Tuple[str, bool, float]
         recommend_reverse: True if we recommend inverting, False otherwise
         confidence: float representing detection confidence (0.0 to 1.0)
     """
+    # Apply robust outlier clipping to avoid startup/transient artifact poisoning
+    sig = signal.copy()
+    q25, q75 = np.percentile(sig, [25, 75])
+    iqr = q75 - q25
+    med = np.median(sig)
+    if iqr > 1e-9:
+        lower = med - 3.5 * iqr
+        upper = med + 3.5 * iqr
+        sig = np.clip(sig, lower, upper)
+
     # 1. Detrend signal first to focus on AC component
-    sig_detrend = scipy.signal.detrend(signal)
+    sig_detrend = scipy.signal.detrend(sig)
     
     # 2. Skewness check
     sig_skew = float(skew(sig_detrend))

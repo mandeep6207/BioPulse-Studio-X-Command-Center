@@ -27,7 +27,9 @@ from biopulse_backend.core.download_center import (
     export_preprocessed_csv,
     export_features_csv,
     export_report_json,
-    create_research_package
+    create_research_package,
+    export_pdf_report,
+    export_png_plot
 )
 from biopulse_backend.core.batch_processor import process_batch
 from biopulse_backend.core.verification_engine import verify_signal_pipeline
@@ -215,6 +217,8 @@ if "override_orientation" not in st.session_state:
     st.session_state.override_orientation = "Auto"
 if "override_filter" not in st.session_state:
     st.session_state.override_filter = "Auto"
+if "files_reverse_state" not in st.session_state:
+    st.session_state.files_reverse_state = {}
 
 # Automatically search and pre-load test files if registry is empty
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -225,7 +229,8 @@ def process_file_pipeline(
     file_path: str,
     override_fs: Optional[float] = None,
     override_orientation: str = "Auto",
-    override_filter: str = "Auto"
+    override_filter: str = "Auto",
+    manual_reverse: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     Executes the 17-stage processing on the given file path and returns all intermediate variables.
@@ -254,6 +259,10 @@ def process_file_pipeline(
     elif override_orientation == "Force Inverted":
         orientation = "inverted"
         recommend_reverse = True
+        
+    if manual_reverse is not None:
+        recommend_reverse = manual_reverse
+        orientation = "inverted" if manual_reverse else "normal"
         
     # If orientation recommends reverse, we invert the signal for processing!
     clean_sig = raw_sig * -1.0 if recommend_reverse else raw_sig
@@ -307,6 +316,7 @@ def process_file_pipeline(
         "source_guess": source_guess,
         "orientation": orientation,
         "orient_confidence": orient_confidence,
+        "recommend_reverse": recommend_reverse,
         "quality_score": quality_score,
         "quality_band": quality_band,
         "quality_metrics": quality_metrics,
@@ -424,8 +434,11 @@ with st.sidebar:
     total_dur = 0.0
     for f_name, f_info in st.session_state.files_registry.items():
         try:
-            res = process_file_pipeline(f_info["path"])
-            total_dur += res["duration_sec"]
+            res_total = process_file_pipeline(
+                f_info["path"],
+                manual_reverse=st.session_state.files_reverse_state.get(f_name, None)
+            )
+            total_dur += res_total["duration_sec"]
         except Exception:
             pass
     st.write(f"**Total Duration:** {total_dur:.1f} s")
@@ -446,12 +459,26 @@ if st.session_state.files_registry:
         
     # Get active file details
     active_path = st.session_state.files_registry[st.session_state.active_file_name]["path"]
+    manual_reverse = st.session_state.files_reverse_state.get(st.session_state.active_file_name, None)
     res = process_file_pipeline(
         active_path,
         override_fs=st.session_state.get("override_fs"),
         override_orientation=st.session_state.get("override_orientation", "Auto"),
-        override_filter=st.session_state.get("override_filter", "Auto")
+        override_filter=st.session_state.get("override_filter", "Auto"),
+        manual_reverse=manual_reverse
     )
+    
+    # If not explicitly set in session state yet, initialize it from the auto-detected recommend_reverse
+    if st.session_state.active_file_name not in st.session_state.files_reverse_state:
+        st.session_state.files_reverse_state[st.session_state.active_file_name] = res["recommend_reverse"]
+        
+    # Show the manual reverse toggle in the sidebar
+    current_rev = st.session_state.files_reverse_state[st.session_state.active_file_name]
+    new_rev = st.sidebar.toggle("Reverse Signal Polarity", value=current_rev, key=f"sidebar_toggle_reverse_{st.session_state.active_file_name}")
+    if new_rev != current_rev:
+        st.session_state.files_reverse_state[st.session_state.active_file_name] = new_rev
+        st.success("Signal polarity reversed! Re-running pipeline...")
+        st.rerun()
 else:
     res = None
 
@@ -565,6 +592,8 @@ if res:
     prep_csv_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_preprocessed.csv")
     feat_csv_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_features.csv")
     report_json_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_report.json")
+    prep_png_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_waveform.png")
+    pdf_report_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_report.pdf")
     zip_package_path = os.path.join(temp_dir, f"{res['file_info']['file_name']}_research_package.zip")
     
     export_raw_csv(res["df"], raw_csv_path)
@@ -588,7 +617,16 @@ if res:
         "failure_reasons": res["verdict"].failure_reasons
     }
     export_report_json(report_dict, report_json_path)
-    create_research_package([raw_csv_path, prep_csv_path, feat_csv_path, report_json_path], zip_package_path)
+    
+    # Generate PNG and PDF
+    export_png_plot(time_arr, res["raw_sig"], res["filtered_sig"], peaks_indices, res["fs"], prep_png_path)
+    export_pdf_report(res, prep_png_path, pdf_report_path)
+    
+    # Bundle all files into ZIP
+    create_research_package(
+        [raw_csv_path, prep_csv_path, feat_csv_path, report_json_path, prep_png_path, pdf_report_path],
+        zip_package_path
+    )
     
     # Plotly layout configurations
     plotly_layout = dict(
@@ -789,8 +827,8 @@ if res:
             with open(zip_package_path, "rb") as f:
                 st.download_button("Download ZIP Research Package", f, file_name=f"{res['file_info']['file_name']}_research_package.zip", mime="application/zip", use_container_width=True)
                 
-            if st.button("Generate PDF Report", use_container_width=True):
-                st.error("NotImplementedError: PDF/PNG report rendering is deferred to Phase 2 UI Integration.")
+            with open(pdf_report_path, "rb") as f:
+                st.download_button("Download PDF Report", f, file_name=f"{res['file_info']['file_name']}_report.pdf", mime="application/pdf", use_container_width=True)
 
         # 6. Bottom Row Expandable Plots
         st.markdown("### 📊 Advanced Visualizations")
@@ -1032,6 +1070,14 @@ if res:
             - **Detection Confidence:** `{res['orient_confidence']:.2f}`
             """)
             
+            # Manual toggle inside Orientation Detector view
+            current_rev = st.session_state.files_reverse_state.get(st.session_state.active_file_name, res["recommend_reverse"])
+            new_rev = st.toggle("Manually Reverse/Invert Signal Polarity", value=current_rev, key=f"module_toggle_reverse_{st.session_state.active_file_name}")
+            if new_rev != current_rev:
+                st.session_state.files_reverse_state[st.session_state.active_file_name] = new_rev
+                st.success("Signal polarity reversed! Re-running pipeline...")
+                st.rerun()
+            
             st.write("### Orientation Waveform Preview")
             fig_orient = go.Figure()
             raw_segment = raw_arr[:min(len(raw_arr), int(res['fs'] * 5))]
@@ -1105,6 +1151,23 @@ if res:
             st.markdown('<div class="panel-card"><div class="panel-title">🔬 Filter Playground Scoreboard</div>', unsafe_allow_html=True)
             st.write("Evaluates various DSP bandpass and lowpass filters on morphology preservation, peak stability, and SNR gains.")
             
+            # Interactive Filter Selector
+            filters_list = ["Auto", "None", "Butterworth", "Chebyshev", "Savitzky-Golay", "Gaussian", "Median", "Wavelet"]
+            current_filter = st.session_state.get("override_filter", "Auto")
+            
+            selected_filter = st.selectbox(
+                "Select Filter to Preview Live",
+                options=filters_list,
+                index=filters_list.index(current_filter)
+            )
+            if selected_filter != current_filter:
+                st.session_state.override_filter = selected_filter
+                st.success(f"Filter overridden to {selected_filter}! Re-running pipeline...")
+                st.rerun()
+                
+            if res["needs_comp"]:
+                st.warning("⚖️ Top filters are within 3% score difference. The system flags this as 'needs comparison'. Use the preview selector above to manually inspect the candidates and pick your override.")
+            
             score_data = []
             for name, metrics in res["scoreboard"].items():
                 score_data.append({
@@ -1121,8 +1184,8 @@ if res:
             st.write("### Filter Conditioning Comparison")
             fig_filt_comp = go.Figure()
             fig_filt_comp.add_trace(go.Scatter(x=time_arr, y=raw_arr, name="Raw Signal", mode="lines", line=dict(color="#1F2937", width=1, dash="dash")))
-            fig_filt_comp.add_trace(go.Scatter(x=time_arr, y=prep_arr, name=f"Best Filter ({res['best_filter']})", mode="lines", line=dict(color="#163B6D", width=2)))
-            fig_filt_comp.update_layout(title="Raw vs. Best Filtered Signal (Conditioned)", xaxis_title="Time (seconds)", yaxis_title="Amplitude", **plotly_layout)
+            fig_filt_comp.add_trace(go.Scatter(x=time_arr, y=prep_arr, name=f"Active Filter ({res['best_filter']})", mode="lines", line=dict(color="#163B6D", width=2)))
+            fig_filt_comp.update_layout(title=f"Raw vs. Active Filtered Signal ({res['best_filter']})", xaxis_title="Time (seconds)", yaxis_title="Amplitude", **plotly_layout)
             fig_filt_comp.update_xaxes(range=[0, 10])
             st.plotly_chart(fig_filt_comp, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1362,11 +1425,15 @@ if res:
                     st.download_button("Download Raw Signal (CSV)", f, file_name=f"{res['file_info']['file_name']}_raw.csv", mime="text/csv", use_container_width=True)
                 with open(prep_csv_path, "rb") as f:
                     st.download_button("Download Preprocessed Signal (CSV)", f, file_name=f"{res['file_info']['file_name']}_preprocessed.csv", mime="text/csv", use_container_width=True)
+                with open(prep_png_path, "rb") as f:
+                    st.download_button("Download Waveform Chart (PNG)", f, file_name=f"{res['file_info']['file_name']}_waveform.png", mime="image/png", use_container_width=True)
             with col_dl2:
                 with open(feat_csv_path, "rb") as f:
                     st.download_button("Download Extracted Features (CSV)", f, file_name=f"{res['file_info']['file_name']}_features.csv", mime="text/csv", use_container_width=True)
                 with open(report_json_path, "rb") as f:
                     st.download_button("Download Verification Report (JSON)", f, file_name=f"{res['file_info']['file_name']}_report.json", mime="application/json", use_container_width=True)
+                with open(pdf_report_path, "rb") as f:
+                    st.download_button("Download PDF Research Report (PDF)", f, file_name=f"{res['file_info']['file_name']}_report.pdf", mime="application/pdf", use_container_width=True)
                     
             st.markdown("---")
             with open(zip_package_path, "rb") as f:

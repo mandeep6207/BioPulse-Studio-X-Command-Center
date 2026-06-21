@@ -64,7 +64,15 @@ def assess_signal_quality(
     missing_pct = float(np.sum(nans) / total_len * 100.0)
     
     # Use interpolated signal for subsequent DSP calculations
-    sig = interpolated_signal
+    # Apply robust outlier clipping to avoid startup/transient artifact poisoning
+    sig = interpolated_signal.copy()
+    q25, q75 = np.percentile(sig, [25, 75])
+    iqr = q75 - q25
+    med = np.median(sig)
+    if iqr > 1e-9:
+        lower = med - 3.5 * iqr
+        upper = med + 3.5 * iqr
+        sig = np.clip(sig, lower, upper)
     
     # 2. Flat region check
     diffs = np.diff(sig)

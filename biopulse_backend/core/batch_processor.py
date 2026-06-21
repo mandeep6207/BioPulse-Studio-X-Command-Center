@@ -19,7 +19,9 @@ from biopulse_backend.core.download_center import (
     export_preprocessed_csv,
     export_features_csv,
     export_report_json,
-    create_research_package
+    create_research_package,
+    export_pdf_report,
+    export_png_plot
 )
 from biopulse_backend.core.verification_engine import verify_signal_pipeline
 
@@ -78,7 +80,10 @@ def process_batch(input_path: str, output_dir: str) -> str:
             duration_bucket, source_guess, duration_sec = classify_signal(clean_sig, fs, file_info, metadata)
             
             # Stage 5: Orientation Detector
-            orientation, recommend_reverse, orient_confidence = detect_orientation(clean_sig, fs)
+            orientation, recommend_reverse, orient_confidence = detect_orientation(raw_sig, fs)
+            
+            # If orientation recommends reverse, we invert the signal for processing!
+            clean_sig = raw_sig * -1.0 if recommend_reverse else raw_sig
             
             # Stage 6: Quality Engine
             quality_score, quality_band, quality_metrics = assess_signal_quality(raw_sig, clean_sig, fs)
@@ -108,6 +113,9 @@ def process_batch(input_path: str, output_dir: str) -> str:
                 quality_score=quality_score,
                 quality_band=quality_band
             )
+            
+            # Get peak indices for PNG export
+            peaks_indices = np.array(vis_data["peaks"])
             
             # Export individual files (Stage 12)
             raw_csv = export_raw_csv(df, os.path.join(output_dir, f"{base_name}_raw.csv"))
@@ -150,7 +158,37 @@ def process_batch(input_path: str, output_dir: str) -> str:
             }
             report_json = export_report_json(report_dict, os.path.join(output_dir, f"{base_name}_report.json"))
             
-            generated_files.extend([raw_csv, prep_csv, feat_csv, report_json])
+            # Export PNG plot
+            prep_png = export_png_plot(
+                np.array(vis_data["signal_data"]["time"]),
+                raw_sig,
+                filtered_sig,
+                peaks_indices,
+                fs,
+                os.path.join(output_dir, f"{base_name}_waveform.png")
+            )
+            
+            # Export PDF report
+            res_pdf = {
+                "file_info": file_info,
+                "fs": fs,
+                "duration_sec": duration_sec,
+                "raw_sig": raw_sig,
+                "filtered_sig": filtered_sig,
+                "quality_score": quality_score,
+                "quality_band": quality_band,
+                "readiness_score": readiness_score,
+                "category": category,
+                "verdict": verdict,
+                "quality_metrics": quality_metrics
+            }
+            pdf_report = export_pdf_report(
+                res_pdf,
+                prep_png,
+                os.path.join(output_dir, f"{base_name}_report.pdf")
+            )
+            
+            generated_files.extend([raw_csv, prep_csv, feat_csv, report_json, prep_png, pdf_report])
             
             # Update Record
             record = {

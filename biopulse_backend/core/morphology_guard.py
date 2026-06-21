@@ -7,12 +7,25 @@ def extract_morphology_properties(sig: np.ndarray, fs: float) -> Dict[str, float
     """
     Extracts key physiological morphology features from the signal.
     """
-    sig_detrend = scipy.signal.detrend(sig)
-    std_val = np.std(sig_detrend)
+    # Smooth signal with a lowpass filter at 5Hz to find physiological peaks/troughs
+    nyq = 0.5 * fs
+    cutoff = min(5.0, nyq - 0.1)
+    if cutoff > 0.1:
+        b, a = scipy.signal.butter(2, cutoff / nyq, btype='low')
+        smooth_sig = scipy.signal.filtfilt(b, a, sig)
+    else:
+        smooth_sig = sig.copy()
+        
+    smooth_detrend = scipy.signal.detrend(smooth_sig)
+    std_smooth = np.std(smooth_detrend)
     dist = max(5, int(fs * 0.4))
     
-    peaks, props = scipy.signal.find_peaks(sig_detrend, distance=dist, prominence=0.05 * std_val)
-    troughs, _ = scipy.signal.find_peaks(-sig_detrend, distance=dist, prominence=0.05 * std_val)
+    # Find peaks and troughs on the smoothed detrended signal
+    peaks, props = scipy.signal.find_peaks(smooth_detrend, distance=dist, prominence=0.05 * (std_smooth if std_smooth > 1e-9 else 1.0))
+    troughs, _ = scipy.signal.find_peaks(-smooth_detrend, distance=dist, prominence=0.05 * (std_smooth if std_smooth > 1e-9 else 1.0))
+    
+    sig_detrend = scipy.signal.detrend(sig)
+    std_val = np.std(sig_detrend)
     
     if len(peaks) < 2:
         return {
@@ -33,11 +46,11 @@ def extract_morphology_properties(sig: np.ndarray, fs: float) -> Dict[str, float
     hr = 60.0 / rr_mean
     
     # Prominence
-    prominences = props.get("prominences", np.array([std_val]))
+    prominences = props.get("prominences", np.array([std_smooth]))
     mean_prom = float(np.mean(prominences))
     
-    # Pulse widths at half-height (seconds)
-    widths, _, _, _ = scipy.signal.peak_widths(sig_detrend, peaks, rel_height=0.5)
+    # Pulse widths at half-height (seconds) on smoothed signal
+    widths, _, _, _ = scipy.signal.peak_widths(smooth_detrend, peaks, rel_height=0.5)
     mean_width = float(np.mean(widths) / fs)
     
     # Rise and decay times
@@ -54,7 +67,7 @@ def extract_morphology_properties(sig: np.ndarray, fs: float) -> Dict[str, float
     mean_rise = float(np.mean(rise_times)) if rise_times else rr_mean * 0.3
     mean_decay = float(np.mean(decay_times)) if decay_times else rr_mean * 0.7
     
-    # Amplitude: peak to trough
+    # Amplitude: peak to trough calculated on the actual input signal using clean indices
     mean_peak_val = np.mean(sig[peaks]) if len(peaks) > 0 else np.mean(sig)
     mean_trough_val = np.mean(sig[troughs]) if len(troughs) > 0 else np.mean(sig)
     amplitude = float(mean_peak_val - mean_trough_val)
@@ -197,9 +210,39 @@ def guard_filter_morphology(
             degraded = (attempt > 0)
             details["final_strength_attempt"] = attempt
             details["status"] = "PASSED"
+            
+            # Diagnostic logs
+            raw_min, raw_max = np.min(signal), np.max(signal)
+            raw_std = np.std(signal)
+            filt_min, filt_max = np.min(filtered), np.max(filtered)
+            filt_std = np.std(filtered)
+            mad = np.mean(np.abs(filtered - signal))
+            print(f"\n--- MORPHOLOGY GUARD PREPROCESSING DICTIONARY LOGS ---")
+            print(f"Filter Variant Selected: {filter_name} (Attempt {attempt})")
+            print(f"Raw Signal: min={raw_min:.4f}, max={raw_max:.4f}, std={raw_std:.4f}")
+            print(f"Raw Signal First 50: {signal[:50].tolist()}")
+            print(f"Filtered Signal: min={filt_min:.4f}, max={filt_max:.4f}, std={filt_std:.4f}")
+            print(f"Filtered Signal First 50: {filtered[:50].tolist()}")
+            print(f"Mean Absolute Difference (Filtered vs Raw): {mad:.6f}")
+            if mad > 1e-6:
+                print("Numerical Validation: preprocessed_signal != raw_signal (PASSED)")
+            else:
+                print("Numerical Validation: preprocessed_signal == raw_signal (WARNING: NO-OP)")
+            
             return filtered, degraded, details
             
     # If all attempts fail, we fallback to the raw signal (attempt 3) and mark as degraded
     details["final_strength_attempt"] = 3
     details["status"] = "DEGRADED_FALLBACK"
-    return signal.copy(), True, details
+    fallback_sig = signal.copy()
+    
+    # Diagnostic logs for fallback
+    raw_min, raw_max = np.min(signal), np.max(signal)
+    raw_std = np.std(signal)
+    print(f"\n--- MORPHOLOGY GUARD PREPROCESSING DICTIONARY LOGS (FALLBACK) ---")
+    print(f"Filter Variant Selected: {filter_name} (Attempt 3 - Fallback)")
+    print(f"Raw Signal: min={raw_min:.4f}, max={raw_max:.4f}, std={raw_std:.4f}")
+    print(f"Raw Signal First 50: {signal[:50].tolist()}")
+    print("Numerical Validation: preprocessed_signal == raw_signal (WARNING: FALLBACK APPLIED)")
+    
+    return fallback_sig, True, details

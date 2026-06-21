@@ -50,7 +50,10 @@ def test_end_to_end_pipeline(sample_paths):
         duration_bucket, source_guess, duration_sec = classify_signal(clean_sig, fs, file_info, metadata)
         
         # Stage 5: Orientation Detector
-        orientation, recommend_reverse, orient_confidence = detect_orientation(clean_sig, fs)
+        orientation, recommend_reverse, orient_confidence = detect_orientation(raw_sig, fs)
+        
+        # If orientation recommends reverse, we invert the signal for processing!
+        clean_sig = raw_sig * -1.0 if recommend_reverse else raw_sig
         
         # Stage 6: Quality Engine
         quality_score, quality_band, quality_metrics = assess_signal_quality(raw_sig, clean_sig, fs)
